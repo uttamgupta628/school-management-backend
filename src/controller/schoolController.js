@@ -1,9 +1,8 @@
-const { db } = require('../config/database');
+const School = require('../model/school.model');
 const { validateSchoolData } = require('../utils/validation');
 const { deleteSchoolImage, generateImageUrl } = require('../utils/fileUtils');
 const fs = require('fs');
 
-// Health check
 const healthCheck = (req, res) => {
   res.json({ 
     status: 'OK', 
@@ -12,67 +11,59 @@ const healthCheck = (req, res) => {
   });
 };
 
-// Get all schools
-const getAllSchools = (req, res) => {
-  const query = 'SELECT * FROM schools ORDER BY created_at DESC';
-  
-  db.query(query, (err, results) => {
-    if (err) {
-      console.error('Error fetching schools:', err);
-      return res.status(500).json({
-        success: false,
-        message: 'Error fetching schools',
-        error: err.message
-      });
-    }
+const getAllSchools = async (req, res) => {
+  try {
+    const schools = await School.find().sort({ createdAt: -1 });
     
-    const schoolsWithImageUrls = results.map(school => ({
-      ...school,
+    const schoolsWithImageUrls = schools.map(school => ({
+      ...school.toObject(),
       image: generateImageUrl(req, school.image)
     }));
     
     res.json({
       success: true,
       data: schoolsWithImageUrls,
-      count: results.length
+      count: schools.length
     });
-  });
+  } catch (error) {
+    console.error('Error fetching schools:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching schools',
+      error: error.message
+    });
+  }
 };
 
-// Get single school by ID
-const getSchoolById = (req, res) => {
-  const schoolId = req.params.id;
-  const query = 'SELECT * FROM schools WHERE id = ?';
-  
-  db.query(query, [schoolId], (err, results) => {
-    if (err) {
-      console.error('Error fetching school:', err);
-      return res.status(500).json({
-        success: false,
-        message: 'Error fetching school',
-        error: err.message
-      });
-    }
+const getSchoolById = async (req, res) => {
+  try {
+    const school = await School.findById(req.params.id);
     
-    if (results.length === 0) {
+    if (!school) {
       return res.status(404).json({
         success: false,
         message: 'School not found'
       });
     }
     
-    const school = results[0];
-    school.image = generateImageUrl(req, school.image);
+    const schoolData = school.toObject();
+    schoolData.image = generateImageUrl(req, school.image);
     
     res.json({
       success: true,
-      data: school
+      data: schoolData
     });
-  });
+  } catch (error) {
+    console.error('Error fetching school:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching school',
+      error: error.message
+    });
+  }
 };
 
-// Add new school
-const addSchool = (req, res) => {
+const addSchool = async (req, res) => {
   console.log('Request body:', req.body);
   console.log('Request file:', req.file);
   
@@ -109,44 +100,31 @@ const addSchool = (req, res) => {
     
     const imageName = req.file.filename;
     
-    const query = `
-      INSERT INTO schools (name, address, city, state, contact, image, email_id) 
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `;
+    const school = new School({
+      name,
+      address,
+      city,
+      state,
+      contact,
+      image: imageName,
+      email_id
+    });
     
-    db.query(query, [name, address, city, state, contact, imageName, email_id], (err, result) => {
-      if (err) {
-        console.error('Database error:', err);
-        
-        if (req.file) {
-          try {
-            fs.unlinkSync(req.file.path);
-          } catch (deleteErr) {
-            console.error('Error deleting file:', deleteErr);
-          }
-        }
-        
-        return res.status(500).json({
-          success: false,
-          message: 'Error adding school to database',
-          error: err.message
-        });
+    await school.save();
+    
+    res.status(201).json({
+      success: true,
+      message: 'School added successfully',
+      data: {
+        id: school._id,
+        name,
+        address,
+        city,
+        state,
+        contact,
+        email_id,
+        image: generateImageUrl(req, imageName)
       }
-      
-      res.status(201).json({
-        success: true,
-        message: 'School added successfully',
-        data: {
-          id: result.insertId,
-          name,
-          address,
-          city,
-          state,
-          contact,
-          email_id,
-          image: generateImageUrl(req, imageName)
-        }
-      });
     });
     
   } catch (error) {
@@ -160,6 +138,13 @@ const addSchool = (req, res) => {
       }
     }
     
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email already exists'
+      });
+    }
+    
     res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -168,8 +153,7 @@ const addSchool = (req, res) => {
   }
 };
 
-// Update school
-const updateSchool = (req, res) => {
+const updateSchool = async (req, res) => {
   try {
     const schoolId = req.params.id;
     const { name, address, city, state, contact, email_id } = req.body;
@@ -185,146 +169,133 @@ const updateSchool = (req, res) => {
       });
     }
     
-    db.query('SELECT * FROM schools WHERE id = ?', [schoolId], (err, results) => {
-      if (err) {
-        console.error('Error fetching school for update:', err);
-        if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(500).json({
-          success: false,
-          message: 'Error fetching school data'
-        });
-      }
-      
-      if (results.length === 0) {
-        if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(404).json({
-          success: false,
-          message: 'School not found'
-        });
-      }
-      
-      const currentSchool = results[0];
-      let imageName = currentSchool.image;
-      
-      if (req.file) {
-        if (currentSchool.image) {
-          deleteSchoolImage(currentSchool.image);
-        }
-        imageName = req.file.filename;
-      }
-      
-      const query = `
-        UPDATE schools 
-        SET name = ?, address = ?, city = ?, state = ?, contact = ?, image = ?, email_id = ?
-        WHERE id = ?
-      `;
-      
-      db.query(query, [name, address, city, state, contact, imageName, email_id, schoolId], (err, result) => {
-        if (err) {
-          console.error('Error updating school:', err);
-          if (req.file) fs.unlinkSync(req.file.path);
-          return res.status(500).json({
-            success: false,
-            message: 'Error updating school'
-          });
-        }
-        
-        res.json({
-          success: true,
-          message: 'School updated successfully',
-          data: {
-            id: schoolId,
-            name,
-            address,
-            city,
-            state,
-            contact,
-            email_id,
-            image: generateImageUrl(req, imageName)
-          }
-        });
-      });
-    });
+    const currentSchool = await School.findById(schoolId);
     
-  } catch (error) {
-    console.error('Error processing update request:', error);
-    if (req.file) fs.unlinkSync(req.file.path);
-    res.status(500).json({
-      success: false,
-      message: 'Internal server error'
-    });
-  }
-};
-
-// Delete school
-const deleteSchool = (req, res) => {
-  const schoolId = req.params.id;
-  
-  db.query('SELECT image FROM schools WHERE id = ?', [schoolId], (err, results) => {
-    if (err) {
-      console.error('Error fetching school for deletion:', err);
-      return res.status(500).json({
-        success: false,
-        message: 'Error fetching school data'
-      });
-    }
-    
-    if (results.length === 0) {
+    if (!currentSchool) {
+      if (req.file) fs.unlinkSync(req.file.path);
       return res.status(404).json({
         success: false,
         message: 'School not found'
       });
     }
     
-    const school = results[0];
+    let imageName = currentSchool.image;
     
-    db.query('DELETE FROM schools WHERE id = ?', [schoolId], (err, result) => {
-      if (err) {
-        console.error('Error deleting school:', err);
-        return res.status(500).json({
-          success: false,
-          message: 'Error deleting school'
-        });
+    if (req.file) {
+      if (currentSchool.image) {
+        deleteSchoolImage(currentSchool.image);
       }
-      deleteSchoolImage(school.image);
-      
-      res.json({
-        success: true,
-        message: 'School deleted successfully'
-      });
+      imageName = req.file.filename;
+    }
+    
+    const updatedSchool = await School.findByIdAndUpdate(
+      schoolId,
+      {
+        name,
+        address,
+        city,
+        state,
+        contact,
+        image: imageName,
+        email_id
+      },
+      { new: true }
+    );
+    
+    res.json({
+      success: true,
+      message: 'School updated successfully',
+      data: {
+        id: updatedSchool._id,
+        name,
+        address,
+        city,
+        state,
+        contact,
+        email_id,
+        image: generateImageUrl(req, imageName)
+      }
     });
-  });
-};
-
-// Search schools
-const searchSchools = (req, res) => {
-  const searchTerm = `%${req.params.term}%`;
-  const query = `
-    SELECT * FROM schools 
-    WHERE name LIKE ? OR city LIKE ? OR state LIKE ? OR address LIKE ?
-    ORDER BY created_at DESC
-  `;
-  
-  db.query(query, [searchTerm, searchTerm, searchTerm, searchTerm], (err, results) => {
-    if (err) {
-      console.error('Error searching schools:', err);
-      return res.status(500).json({
+    
+  } catch (error) {
+    console.error('Error processing update request:', error);
+    if (req.file) fs.unlinkSync(req.file.path);
+    
+    if (error.code === 11000) {
+      return res.status(400).json({
         success: false,
-        message: 'Error searching schools'
+        message: 'Email already exists'
       });
     }
     
-    const schoolsWithImageUrls = results.map(school => ({
-      ...school,
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+};
+
+const deleteSchool = async (req, res) => {
+  try {
+    const school = await School.findById(req.params.id);
+    
+    if (!school) {
+      return res.status(404).json({
+        success: false,
+        message: 'School not found'
+      });
+    }
+    
+    await School.findByIdAndDelete(req.params.id);
+    deleteSchoolImage(school.image);
+    
+    res.json({
+      success: true,
+      message: 'School deleted successfully'
+    });
+  } catch (error) {
+    console.error('Error deleting school:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error deleting school',
+      error: error.message
+    });
+  }
+};
+
+const searchSchools = async (req, res) => {
+  try {
+    const searchTerm = req.params.term;
+    const searchRegex = new RegExp(searchTerm, 'i');
+    
+    const schools = await School.find({
+      $or: [
+        { name: searchRegex },
+        { city: searchRegex },
+        { state: searchRegex },
+        { address: searchRegex }
+      ]
+    }).sort({ createdAt: -1 });
+    
+    const schoolsWithImageUrls = schools.map(school => ({
+      ...school.toObject(),
       image: generateImageUrl(req, school.image)
     }));
     
     res.json({
       success: true,
       data: schoolsWithImageUrls,
-      count: results.length
+      count: schools.length
     });
-  });
+  } catch (error) {
+    console.error('Error searching schools:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error searching schools',
+      error: error.message
+    });
+  }
 };
 
 module.exports = {
