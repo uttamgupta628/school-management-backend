@@ -1,7 +1,6 @@
 const School = require('../model/school.model');
 const { validateSchoolData } = require('../utils/validation');
-const { deleteSchoolImage, generateImageUrl } = require('../utils/fileUtils');
-const fs = require('fs');
+const { uploadImageToCloudinary, deleteImageFromCloudinary, extractPublicIdFromUrl } = require('../utils/fileUtils');
 
 const healthCheck = (req, res) => {
   res.json({ 
@@ -15,14 +14,9 @@ const getAllSchools = async (req, res) => {
   try {
     const schools = await School.find().sort({ createdAt: -1 });
     
-    const schoolsWithImageUrls = schools.map(school => ({
-      ...school.toObject(),
-      image: generateImageUrl(req, school.image)
-    }));
-    
     res.json({
       success: true,
-      data: schoolsWithImageUrls,
+      data: schools,
       count: schools.length
     });
   } catch (error) {
@@ -46,12 +40,9 @@ const getSchoolById = async (req, res) => {
       });
     }
     
-    const schoolData = school.toObject();
-    schoolData.image = generateImageUrl(req, school.image);
-    
     res.json({
       success: true,
-      data: schoolData
+      data: school
     });
   } catch (error) {
     console.error('Error fetching school:', error);
@@ -71,9 +62,6 @@ const addSchool = async (req, res) => {
     const { name, address, city, state, contact, email_id } = req.body;
     
     if (!name || !address || !city || !state || !contact || !email_id) {
-      if (req.file) {
-        fs.unlinkSync(req.file.path);
-      }
       return res.status(400).json({
         success: false,
         message: 'All fields are required'
@@ -82,9 +70,6 @@ const addSchool = async (req, res) => {
     
     const validation = validateSchoolData(req.body);
     if (!validation.isValid) {
-      if (req.file) {
-        fs.unlinkSync(req.file.path);
-      }
       return res.status(400).json({
         success: false,
         message: validation.errors.join(', ')
@@ -98,7 +83,9 @@ const addSchool = async (req, res) => {
       });
     }
     
-    const imageName = req.file.filename;
+    console.log('Uploading to Cloudinary...');
+    const cloudinaryResult = await uploadImageToCloudinary(req.file.buffer, req.file.originalname);
+    console.log('Cloudinary result:', cloudinaryResult);
     
     const school = new School({
       name,
@@ -106,11 +93,12 @@ const addSchool = async (req, res) => {
       city,
       state,
       contact,
-      image: imageName,
+      image: cloudinaryResult.secure_url,
       email_id
     });
     
     await school.save();
+    console.log('School saved successfully');
     
     res.status(201).json({
       success: true,
@@ -123,20 +111,12 @@ const addSchool = async (req, res) => {
         state,
         contact,
         email_id,
-        image: generateImageUrl(req, imageName)
+        image: cloudinaryResult.secure_url
       }
     });
     
   } catch (error) {
     console.error('Error processing request:', error);
-    
-    if (req.file) {
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (deleteErr) {
-        console.error('Error deleting file:', deleteErr);
-      }
-    }
     
     if (error.code === 11000) {
       return res.status(400).json({
@@ -160,9 +140,6 @@ const updateSchool = async (req, res) => {
     
     const validation = validateSchoolData(req.body);
     if (!validation.isValid) {
-      if (req.file) {
-        fs.unlinkSync(req.file.path);
-      }
       return res.status(400).json({
         success: false,
         message: validation.errors.join(', ')
@@ -172,20 +149,22 @@ const updateSchool = async (req, res) => {
     const currentSchool = await School.findById(schoolId);
     
     if (!currentSchool) {
-      if (req.file) fs.unlinkSync(req.file.path);
       return res.status(404).json({
         success: false,
         message: 'School not found'
       });
     }
     
-    let imageName = currentSchool.image;
+    let imageUrl = currentSchool.image;
     
     if (req.file) {
       if (currentSchool.image) {
-        deleteSchoolImage(currentSchool.image);
+        const publicId = extractPublicIdFromUrl(currentSchool.image);
+        await deleteImageFromCloudinary(publicId);
       }
-      imageName = req.file.filename;
+      
+      const cloudinaryResult = await uploadImageToCloudinary(req.file.buffer, req.file.originalname);
+      imageUrl = cloudinaryResult.secure_url;
     }
     
     const updatedSchool = await School.findByIdAndUpdate(
@@ -196,7 +175,7 @@ const updateSchool = async (req, res) => {
         city,
         state,
         contact,
-        image: imageName,
+        image: imageUrl,
         email_id
       },
       { new: true }
@@ -213,13 +192,12 @@ const updateSchool = async (req, res) => {
         state,
         contact,
         email_id,
-        image: generateImageUrl(req, imageName)
+        image: imageUrl
       }
     });
     
   } catch (error) {
     console.error('Error processing update request:', error);
-    if (req.file) fs.unlinkSync(req.file.path);
     
     if (error.code === 11000) {
       return res.status(400).json({
@@ -238,7 +216,21 @@ const updateSchool = async (req, res) => {
 
 const deleteSchool = async (req, res) => {
   try {
-    const school = await School.findById(req.params.id);
+    console.log('Full request params:', req.params);
+    console.log('Full request URL:', req.url);
+    console.log('Request method:', req.method);
+    
+    const schoolId = req.params.id;
+    console.log('School ID to delete:', schoolId);
+    
+    if (!schoolId || schoolId === 'undefined') {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid school ID is required'
+      });
+    }
+    
+    const school = await School.findById(schoolId);
     
     if (!school) {
       return res.status(404).json({
@@ -247,8 +239,12 @@ const deleteSchool = async (req, res) => {
       });
     }
     
-    await School.findByIdAndDelete(req.params.id);
-    deleteSchoolImage(school.image);
+    if (school.image) {
+      const publicId = extractPublicIdFromUrl(school.image);
+      await deleteImageFromCloudinary(publicId);
+    }
+    
+    await School.findByIdAndDelete(schoolId);
     
     res.json({
       success: true,
@@ -278,14 +274,9 @@ const searchSchools = async (req, res) => {
       ]
     }).sort({ createdAt: -1 });
     
-    const schoolsWithImageUrls = schools.map(school => ({
-      ...school.toObject(),
-      image: generateImageUrl(req, school.image)
-    }));
-    
     res.json({
       success: true,
-      data: schoolsWithImageUrls,
+      data: schools,
       count: schools.length
     });
   } catch (error) {

@@ -8,7 +8,7 @@ const schoolSchema = new mongoose.Schema(
     state: { type: String, required: true },
     contact: { type: String, required: true },
     image: { type: String },
-    email_id: { type: String, required: true, unique: true },
+    email_id: { type: String, required: true },
   },
   { timestamps: true }
 );
