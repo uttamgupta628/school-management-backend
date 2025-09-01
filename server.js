@@ -3,9 +3,9 @@ const cors = require('cors');
 const path = require('path');
 require('dotenv').config();
 
-const { connectDB, createSchoolsTable } = require('./config/database');
-const schoolRoutes = require('./routes/schoolRoutes');
-const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
+const { connectDB, createSchoolsTable } = require('./src/config/database');
+const schoolRoutes = require('./src/routes/schoolRoutes');
+const { errorHandler, notFoundHandler } = require('./src/middleware/errorHandler');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -46,7 +46,7 @@ const startServer = async () => {
 
 const gracefulShutdown = (signal) => {
   console.log(`${signal} received, closing server...`);
-  const { db } = require('./config/database');
+  const { db } = require('./src/config/database');
   db.end();
   process.exit(0);
 };
